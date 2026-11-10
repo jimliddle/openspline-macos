@@ -6,6 +6,9 @@ This is an Apple Silicon fork of [OpenSpline](https://github.com/openspline/open
 
 The local workflow needs no cloud inference account or API key. Initial setup downloads dependencies and models, speech and avatar generation then run locally. Cloud voice integrations inherited from OpenSpline remain separate, optional features.
 
+[openspline-video.webm](https://github.com/user-attachments/assets/94464ac6-1c12-4fab-a366-3864a9b37e99)
+
+
 ## What this fork adds
 
 - **Apple Silicon inference.** A Metal/MPS port of the Low/Lite avatar backend, with device-specific attention, real-valued rotary embeddings, synchronization, validation and memory reporting.
