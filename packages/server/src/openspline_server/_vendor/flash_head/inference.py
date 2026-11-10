@@ -1,7 +1,9 @@
+# Modified for the OpenSpline Apple Silicon fork (2026): Metal/MPS support.
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 import yaml
 import torch
 import copy
+import os
 from loguru import logger
 
 from openspline_server._vendor.flash_head.src.pipeline.flash_head_pipeline import FlashHeadPipeline
@@ -15,6 +17,11 @@ with (Path(__file__).parent / "configs/infer_params.yaml").open() as f:
 
 def get_pipeline(world_size, ckpt_dir, model_type, wav2vec_dir, param_dtype=torch.bfloat16):
     global infer_params
+    if "OPENSPLINE_RESOLUTION" in os.environ:
+        resolution = int(os.environ["OPENSPLINE_RESOLUTION"])
+        if resolution not in {384, 512}:
+            raise ValueError("OPENSPLINE_RESOLUTION must be 384 or 512")
+        infer_params.update(height=resolution, width=resolution)
     with WarmupSpan("distributed_init"):
         ulysses_degree, ring_degree = get_parallel_degree(world_size, infer_params['num_heads'])
         device = get_device(ulysses_degree, ring_degree)
@@ -79,3 +86,4 @@ def run_pipeline(pipeline, audio_embedding):
     sample = pipeline.generate(audio_embedding)
     sample_frames = (((sample+1)/2).permute(1,2,3,0).clip(0,1) * 255).contiguous()
     return sample_frames
+

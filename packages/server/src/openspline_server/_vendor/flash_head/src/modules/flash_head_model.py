@@ -1,3 +1,4 @@
+# Modified for the OpenSpline Apple Silicon fork (2026): Metal/MPS support.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -6,7 +7,6 @@ from typing import Tuple, Optional
 from einops import rearrange
 from diffusers import ModelMixin
 from diffusers.configuration_utils import ConfigMixin, register_to_config
-import torch.cuda.amp as amp
 import torch.distributed as dist
 try:
     from xfuser.core.distributed import get_sequence_parallel_rank, get_sequence_parallel_world_size, get_sp_group
@@ -38,7 +38,7 @@ except ModuleNotFoundError:
     
     
 def flash_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, num_heads: int, compatibility_mode=False):
-    if compatibility_mode or q.dtype == torch.float32:
+    if compatibility_mode or q.dtype == torch.float32 or q.device.type != "cuda":
         q = rearrange(q, "b s (n d) -> b n s d", n=num_heads)
         k = rearrange(k, "b s (n d) -> b n s d", n=num_heads)
         v = rearrange(v, "b s (n d) -> b n s d", n=num_heads)
@@ -71,8 +71,9 @@ def flash_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, num_heads
     return x
 
 def sinusoidal_embedding_1d(dim, position):
-    sinusoid = torch.outer(position.type(torch.float64), torch.pow(
-        10000, -torch.arange(dim//2, dtype=torch.float64, device=position.device).div(dim//2)))
+    dtype = torch.float32 if position.device.type == "mps" else torch.float64
+    sinusoid = torch.outer(position.to(dtype), torch.pow(
+        10000, -torch.arange(dim//2, dtype=dtype, device=position.device).div(dim//2)))
     x = torch.cat([torch.cos(sinusoid), torch.sin(sinusoid)], dim=1)
     return x.to(position.dtype)
 
@@ -105,12 +106,37 @@ def pad_freqs(original_tensor, target_len):
     padded_tensor = torch.cat([original_tensor, padding_tensor], dim=0)
     return padded_tensor
 
+def rope_apply_real(x, freqs, grid_sizes):
+    """Equivalent rotary embedding using FP32 pairs; Metal has no FP64 support."""
+    f, h, w = grid_sizes
+    length = f * h * w
+    half = x.shape[-1] // 2
+    temporal, vertical, horizontal = freqs.split(
+        [half - 2 * (half // 3), half // 3, half // 3], dim=1
+    )
+    multipliers = torch.cat([
+        temporal[:f].view(f, 1, 1, -1, 2).expand(f, h, w, -1, 2),
+        vertical[:h].view(1, h, 1, -1, 2).expand(f, h, w, -1, 2),
+        horizontal[:w].view(1, 1, w, -1, 2).expand(f, h, w, -1, 2),
+    ], dim=-2).reshape(length, 1, half, 2)
+    pairs = x[:, :length].float().reshape(x.shape[0], length, x.shape[2], half, 2)
+    real, imaginary = pairs.unbind(-1)
+    cosine, sine = multipliers.unbind(-1)
+    rotated = torch.stack((real * cosine - imaginary * sine,
+                           real * sine + imaginary * cosine), dim=-1).flatten(-2)
+    return torch.cat((rotated.to(x.dtype), x[:, length:]), dim=1)
+
+
 def rope_apply(x, freqs, grid_sizes, use_usp=False, sp_size=1, sp_rank=0):
     """
     x:          [B, L, N, C].
     grid_sizes: [B, 3].
     freqs:      [M, C // 2].
     """
+    if not freqs.is_complex():
+        if use_usp:
+            raise ValueError("Real rotary embeddings require single-device inference")
+        return rope_apply_real(x, freqs, grid_sizes)
     s, n, c = x.size(1), x.size(2), x.size(3) // 2
     # split freqs
     freqs = freqs.split([c - 2 * (c // 3), c // 3, c // 3], dim=1) # [[N, head_dim/2], [N, head_dim/2], [N, head_dim/2]] # T H W 极坐标
@@ -429,6 +455,9 @@ class WanModelAudioProject(ModelMixin, ConfigMixin):
                 **kwargs,
                 ):
 
+        if x.device.type == "mps" and self.freqs.is_complex():
+            # Convert on the CPU before transfer: the original table is complex128.
+            self.freqs = torch.view_as_real(self.freqs).float()
         if self.freqs.device != x.device:
             self.freqs = self.freqs.to(x.device)
 
@@ -553,8 +582,9 @@ class AudioProjModel(ModelMixin, ConfigMixin):
         context_tokens = self.proj3(audio_embeds_c).reshape(batch_size_c*N_t, self.context_tokens, self.output_dim)
 
         # normalization and reshape
-        with amp.autocast(dtype=torch.float32):
+        with torch.autocast(device_type=context_tokens.device.type, enabled=False):
             context_tokens = self.norm(context_tokens)
         context_tokens = rearrange(context_tokens, "(bz f) m c -> bz f m c", f=video_length)
 
         return context_tokens
+

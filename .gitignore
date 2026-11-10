@@ -1,4 +1,6 @@
 .venv/
+.venv-macos/
+.venv-kokoro/
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -22,3 +24,8 @@ artifacts/
 # Local web research cache
 .firecrawl/
 experiments/
+
+# Mac metadata, local progress notes, and publication staging
+.DS_Store
+/MACOS.txt
+/PORT_STATUS.json

@@ -1,3 +1,4 @@
+# Modified for the OpenSpline Apple Silicon fork (2026): Metal/MPS support.
 import math
 from loguru import logger
 import datetime
@@ -11,6 +12,12 @@ def get_parallel_degree(world_size, num_heads):
     return ulysses_degree, ring_degree
 
 def get_device(ulysses_degree, ring_degree):
+    from openspline_server.device import device_type
+
+    if device_type() == "mps":
+        if ulysses_degree != 1 or ring_degree != 1:
+            raise ValueError("Metal inference does not support distributed workers")
+        return "mps"
     if ulysses_degree > 1 or ring_degree > 1:
         from xfuser.core.distributed import (
             init_distributed_environment,
@@ -33,3 +40,4 @@ def get_device(ulysses_degree, ring_degree):
     else:
         device = "cuda"
     return device
+

@@ -1,3 +1,4 @@
+# Modified for the OpenSpline Apple Silicon fork (2026): Metal/MPS support.
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 import os
 from PIL import Image
@@ -10,6 +11,7 @@ from einops import rearrange
 
 from transformers import Wav2Vec2FeatureExtractor
 from openspline_server.warmup import WarmupSpan
+from openspline_server.device import synchronize
 
 from openspline_server._vendor.flash_head.src.modules.flash_head_model import WanModelAudioProject
 from openspline_server._vendor.flash_head.audio_analysis.wav2vec2 import Wav2Vec2Model
@@ -77,6 +79,7 @@ class FlashHeadPipeline:
         """
         self.param_dtype = param_dtype
         self.device = device
+        self.synchronize = lambda: synchronize(self.device)
         self.rank = dist.get_rank() if dist.is_initialized() else 0
         self.use_usp = use_usp and dist.is_initialized()
         self.model_type = model_type
@@ -86,7 +89,7 @@ class FlashHeadPipeline:
             model_dir = os.path.join(checkpoint_dir, "Model_Lite")
             vae_dir = os.path.join(checkpoint_dir, "VAE_LTX")
 
-            with WarmupSpan("vae_load", synchronize=torch.cuda.synchronize):
+            with WarmupSpan("vae_load", synchronize=self.synchronize):
                 from openspline_server._vendor.flash_head.ltx_video.ltx_vae import LtxVAE
                 self.vae = LtxVAE(
                     pretrained_model_type_or_path=vae_dir,
@@ -96,7 +99,7 @@ class FlashHeadPipeline:
         else:
             vae_path = os.path.join(checkpoint_dir, "VAE_Wan/Wan2.1_VAE.pth")
             
-            with WarmupSpan("vae_load", synchronize=torch.cuda.synchronize):
+            with WarmupSpan("vae_load", synchronize=self.synchronize):
                 from openspline_server._vendor.flash_head.wan.modules import WanVAE
                 self.vae = WanVAE(
                     vae_path=vae_path,
@@ -114,7 +117,7 @@ class FlashHeadPipeline:
         with WarmupSpan("avatar_model_load"):
             self.model = WanModelAudioProject.from_pretrained(model_dir, local_files_only=True)
             self.model.eval().requires_grad_(False)
-        with WarmupSpan("avatar_model_to_gpu", synchronize=torch.cuda.synchronize):
+        with WarmupSpan("avatar_model_to_gpu", synchronize=self.synchronize):
             self.model.to(device=self.device, dtype=self.param_dtype)
 
         self.config = self.model.config
@@ -146,7 +149,7 @@ class FlashHeadPipeline:
 
         with WarmupSpan("audio_model_load"):
             self.audio_encoder = Wav2Vec2Model.from_pretrained(wav2vec_dir, local_files_only=True)
-        with WarmupSpan("audio_model_to_gpu", synchronize=torch.cuda.synchronize):
+        with WarmupSpan("audio_model_to_gpu", synchronize=self.synchronize):
             self.audio_encoder = self.audio_encoder.to(self.device)
         self.audio_encoder.feature_extractor._freeze_parameters()
         with WarmupSpan("audio_feature_extractor_load"):
@@ -253,7 +256,7 @@ class FlashHeadPipeline:
                 generator=self.generator)
 
             for i in range(len(self.timesteps)-1):
-                torch.cuda.synchronize()
+                self.synchronize()
                 start_time = time.time()
 
                 noise[:, :self.latent_motion_frames.shape[1]] = self.latent_motion_frames
@@ -287,38 +290,38 @@ class FlashHeadPipeline:
 
                     noise = (1 - t_i_1) * x_0 + t_i_1 * torch.randn(x_0.size(), dtype=x_0.dtype, device=self.device, generator=self.generator)
 
-                torch.cuda.synchronize()
+                self.synchronize()
                 end_time = time.time()
                 if self.rank == 0:
                     print(f'[generate] model denoise per step: {end_time - start_time}s')
 
             noise[:, :self.latent_motion_frames.shape[1]] = self.latent_motion_frames
 
-            torch.cuda.synchronize()
+            self.synchronize()
             start_decode_time = time.time()
 
             videos = self.vae.decode(noise)
 
-            torch.cuda.synchronize()
+            self.synchronize()
             end_decode_time = time.time()
             if self.rank == 0:
                 print(f'[generate] decode video frames: {end_decode_time - start_decode_time}s')
         
-        torch.cuda.synchronize()
+        self.synchronize()
         start_color_correction_time = time.time()
         if self.color_correction_strength > 0.0:
             videos = match_and_blend_colors_torch(videos, self.original_color_reference, self.color_correction_strength)
 
         cond_frame = videos[:, :, -self.motion_frames_num:].to(self.device)
-        torch.cuda.synchronize()
+        self.synchronize()
         end_color_correction_time = time.time()
         if self.rank == 0:
             print(f'[generate] color correction: {end_color_correction_time - start_color_correction_time}s')
 
-        torch.cuda.synchronize()
+        self.synchronize()
         start_encode_time = time.time()
         self.latent_motion_frames = self.vae.encode(cond_frame)
-        torch.cuda.synchronize()
+        self.synchronize()
         end_encode_time = time.time()
         if self.rank == 0:
             print(f'[generate] encode motion frames: {end_encode_time - start_encode_time}s')
@@ -326,3 +329,4 @@ class FlashHeadPipeline:
         gen_video_samples = videos #[:, :, self.motion_frames_num:]
 
         return gen_video_samples[0].to(torch.float32)
+

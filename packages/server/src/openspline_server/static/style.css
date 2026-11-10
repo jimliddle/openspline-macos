@@ -17,19 +17,47 @@ h1 { font-size: 18px; font-weight: 600; }
 h1 a { text-decoration: none; }
 h1 span { margin-left: 6px; color: var(--muted); font-weight: 400; }
 header > a { font-size: 12px; }
-main { display: grid; grid-template-columns: minmax(0, 380px) minmax(0, 1fr); align-items: start; gap: 48px; padding-top: 32px; }
+main { padding-top: 32px; }
+.studio { display: grid; grid-template-columns: minmax(0, 380px) minmax(0, 1fr); align-items: start; gap: 48px; }
 .studio, .example { min-width: 0; }
 #health { margin-bottom: 12px; }
 .preview { position: relative; aspect-ratio: 1; overflow: hidden; border: 1px solid var(--line); background: #f6f6f7; }
 .empty { height: 100%; display: grid; place-items: center; color: var(--muted); font-size: 13px; }
 #portrait-preview { display: block; width: 100%; height: 100%; object-fit: contain; }
+#portrait-crop { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+#portrait-crop:active { cursor: grabbing; }
+#portrait-crop[aria-disabled=true] { cursor: default; }
+#portrait-crop:focus-visible { outline: 3px solid #536a9a; outline-offset: -3px; }
+#crop-grid {
+  position: absolute; inset: 0; pointer-events: none; border: 2px solid #fff9;
+  background-image: linear-gradient(to right, transparent calc(100% - 1px), #fff6 calc(100% - 1px)),
+                    linear-gradient(to bottom, transparent calc(100% - 1px), #fff6 calc(100% - 1px));
+  background-size: calc(100% / 3) calc(100% / 3);
+}
+.crop-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+#crop-editor { margin: 16px 0 0; }
+#crop-editor > .hint { margin-bottom: 12px; }
+#crop-editor label { margin-bottom: 10px; }
+#crop-editor input[type=range] { padding: 0; accent-color: #202124; }
+#crop-zoom-value { float: right; font-variant-numeric: tabular-nums; }
 openspline-avatar { height: 100%; --avatar-radius: 0; --avatar-background: #202124; --avatar-color: #fff; }
 form { margin-top: 20px; }
+.studio form { margin-top: 0; }
+.portrait-note { margin-top: 12px; }
 label { display: block; margin-bottom: 16px; font-size: 12px; font-weight: 500; }
 .hint { display: block; color: var(--muted); font-size: 12px; font-weight: 400; }
 label .hint { margin-top: 6px; }
-input, select, button { font: inherit; color: inherit; border: 1px solid #c9cace; border-radius: 4px; background: #fff; }
-input, select { width: 100%; min-width: 0; margin-top: 6px; padding: 9px 10px; font-size: 13px; }
+input, select, textarea, button { font: inherit; color: inherit; border: 1px solid #c9cace; border-radius: 4px; background: #fff; }
+input, select, textarea { width: 100%; min-width: 0; margin-top: 6px; padding: 9px 10px; font-size: 13px; }
+textarea { display: block; resize: vertical; line-height: 1.6; min-height: 100px; }
+#tts-count { text-align: right; font-variant-numeric: tabular-nums; }
+#tts-settings label:last-child { margin-bottom: 10px; }
+#tts-hint { margin-top: 2px; }
+.voice-preview-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin-bottom: 10px; }
+.voice-preview-controls button { flex: 0 0 auto; }
+audio { display: block; width: 100%; margin: 10px 0; }
+#tts-preview-message:empty { display: none; }
+#tts-preview-message { margin-bottom: 8px; }
 input[type=file] { padding: 7px; }
 input::file-selector-button { margin-right: 8px; font: inherit; }
 .split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -45,11 +73,14 @@ button:hover { background: #f3f3f4; }
 .primary:hover { background: #38393c; }
 .actions { display: flex; gap: 8px; }
 .download { display: inline-block; margin-top: 12px; font-size: 13px; font-weight: 500; }
+.download + .download { margin-left: 14px; }
 button:disabled, fieldset:disabled { opacity: .55; }
 button:disabled { cursor: wait; }
 fieldset:disabled .gpu-option { cursor: default; }
 #status { margin-top: 12px; }
-.example { padding-top: 1px; }
+.example { margin-top: 32px; border-top: 1px solid var(--line); padding-top: 16px; }
+.example > summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.example[open] > summary { margin-bottom: 20px; }
 .example-heading, .example-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 h2 { font-size: 15px; font-weight: 600; }
 #copy-example { padding: 5px 9px; font-size: 12px; }
@@ -64,10 +95,11 @@ pre code { font: inherit; }
 pre ::selection { background: #264f78; }
 .example-footer { margin-top: 10px; color: var(--muted); font-size: 12px; }
 #copy-status { margin-top: 8px; }
-:where(button, a, input, select, pre):focus-visible { outline: 2px solid #536a9a; outline-offset: 3px; }
+:where(button, a, input, select, textarea, pre, summary):focus-visible { outline: 2px solid #536a9a; outline-offset: 3px; }
 @media (max-width: 800px) {
   header, main { padding-left: 20px; padding-right: 20px; }
-  main { max-width: 620px; grid-template-columns: minmax(0, 1fr); gap: 32px; padding-top: 24px; }
+  main { max-width: 620px; padding-top: 24px; }
+  .studio { grid-template-columns: minmax(0, 1fr); gap: 24px; }
   .preview { width: min(100%, 380px); margin-inline: auto; }
 }
 @media (max-width: 380px) {
@@ -75,3 +107,4 @@ pre ::selection { background: #264f78; }
   .split { grid-template-columns: minmax(0, 1fr); gap: 0; }
   pre { padding: 14px; }
 }
+

@@ -137,7 +137,9 @@ def prepare(settings):
             "Native model download requires sibling model directories named avatar and audio"
         )
     qualities = {w.quality for w in settings.workers}
-    if len(settings.workers) == 1:
+    from .device import device_type
+
+    if len(settings.workers) == 1 and device_type() != "mps":
         # Cache every quality offered by the demo before launching it.
         qualities = {"low", "high"}
     print(f"Downloading models before startup: {', '.join(sorted(qualities))}.", flush=True)
@@ -199,3 +201,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -44,11 +44,17 @@ class TestEngine:
 class GPUEngine:
     def __init__(self, settings, world_size):
         from .hardware import validate_cuda, validate_distributed
+        from .device import device_type, synchronize, validate_mps
 
         with WarmupSpan("torch_import"):
             import torch
-        with WarmupSpan("cuda_validate"):
-            dtype = validate_cuda(int(os.environ.get("LOCAL_RANK", "0")))
+        self.device = device_type()
+        self.synchronize = lambda: synchronize(self.device)
+        if self.device == "mps" and (world_size != 1 or settings["quality"] != "low"):
+            raise ValueError("The experimental Metal port requires one Low/Lite worker")
+        with WarmupSpan("device_validate"):
+            dtype = (validate_mps() if self.device == "mps" else
+                     validate_cuda(int(os.environ.get("LOCAL_RANK", "0"))))
         if world_size > 1:
             with WarmupSpan("distributed_validate"):
                 validate_distributed()
@@ -56,7 +62,7 @@ class GPUEngine:
             from ._vendor.flash_head import inference as inf
 
         self.inf = inf
-        with WarmupSpan("pipeline_load", synchronize=torch.cuda.synchronize):
+        with WarmupSpan("pipeline_load", synchronize=self.synchronize):
             self.pipeline = inf.get_pipeline(
                 world_size,
                 settings["model_dir"],
@@ -95,27 +101,36 @@ class GPUEngine:
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
+        if self.device == "cuda":
+            torch.cuda.manual_seed_all(seed)
         self.first_inference = True
-        with WarmupSpan("portrait_encode", synchronize=torch.cuda.synchronize):
+        with WarmupSpan("portrait_encode", synchronize=self.synchronize):
             self.inf.get_base_data(self.pipeline, image, seed, False)
 
     def infer(self, audio):
         if not self.first_inference:
             embedding = self.inf.get_audio_embedding(self.pipeline, audio, self.start, self.end)
             frames = self.inf.run_pipeline(self.pipeline, embedding)[self.motion :]
-            return frames.cpu().numpy().astype(np.uint8, copy=False)
+            return self._frames_to_numpy(frames)
         import torch
 
         with WarmupSpan("first_inference"):
-            with WarmupSpan("first_audio_embedding", synchronize=torch.cuda.synchronize):
+            with WarmupSpan("first_audio_embedding", synchronize=self.synchronize):
                 embedding = self.inf.get_audio_embedding(self.pipeline, audio, self.start, self.end)
-            with WarmupSpan("first_video_generation", synchronize=torch.cuda.synchronize):
+            with WarmupSpan("first_video_generation", synchronize=self.synchronize):
                 frames = self.inf.run_pipeline(self.pipeline, embedding)[self.motion :]
             with WarmupSpan("first_frame_cpu_transfer"):
-                result = frames.cpu().numpy().astype(np.uint8, copy=False)
+                result = self._frames_to_numpy(frames)
         self.first_inference = False
         return result
+
+    @staticmethod
+    def _frames_to_numpy(frames):
+        import torch
+
+        if not torch.isfinite(frames).all().item():
+            raise WorkerFailure("Avatar inference produced non-finite pixels; try float32 precision")
+        return frames.cpu().numpy().astype(np.uint8, copy=False)
 
 
 def _rank_main(rank, world_size, settings, conn, port):
@@ -160,10 +175,9 @@ def _rank_main(rank, world_size, settings, conn, port):
                 frames = engine.infer(*args)
                 result = {"frames": frames, "seconds": time.perf_counter() - started}
                 if settings["backend"] == "gpu":
-                    import torch
+                    from .device import memory_stats
 
-                    result["gpu_memory_bytes"] = torch.cuda.memory_reserved()
-                    result["gpu_peak_allocated_bytes"] = torch.cuda.max_memory_allocated()
+                    result.update(memory_stats())
             elif op == "reset":
                 if hasattr(engine, "pipeline"):
                     for name in (
@@ -198,18 +212,25 @@ def _process_main(settings, conn):
     locks = []
     try:
         devices = settings["devices"]
-        inherited = os.getenv("CUDA_VISIBLE_DEVICES")
+        from .device import device_type
+
+        is_mps = settings["backend"] == "gpu" and device_type() == "mps"
+        if is_mps and tuple(devices) != (0,):
+            raise ValueError("The Metal port uses Apple GPU 0 only")
+        inherited = None if is_mps else os.getenv("CUDA_VISIBLE_DEVICES")
         if inherited:
             visible = inherited.split(",")
             devices = [visible[d] for d in devices]
-        os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, devices))
+        if not is_mps:
+            os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, devices))
         if settings["backend"] == "gpu":
             lock_dir = Path(
                 os.getenv("OPENSPLINE_GPU_LOCK_DIR", str(Path(settings["runtime_dir"]) / "locks"))
             )
             lock_dir.mkdir(parents=True, exist_ok=True)
             for device in devices:
-                fd = (lock_dir / f"gpu-{device}.lock").open("w")
+                prefix = "mps" if is_mps else "gpu"
+                fd = (lock_dir / f"{prefix}-{device}.lock").open("w")
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 locks.append(fd)
         world = len(devices)
@@ -362,6 +383,10 @@ class WorkerPool:
             if len(settings.workers) == 1
             else {}
         )
+        from .device import device_type
+
+        if settings.backend == "gpu" and device_type() == "mps":
+            self.demo_devices = {"low": first.devices}
         self.workers = [Worker(c, settings) for c in settings.workers]
         self.lock = asyncio.Lock()
         self._test_devices = settings.gpu_devices
@@ -409,6 +434,10 @@ class WorkerPool:
 
     async def reserve_quality_switch(self, quality, owner, devices=None):
         """Reserve one worker's GPU group; never displace an active session."""
+        from .device import device_type
+
+        if self.settings.backend == "gpu" and device_type() == "mps" and quality != "low":
+            raise ValueError("The experimental Metal port currently supports Low/Lite only")
         if not isinstance(quality, str) or quality not in {"low", "high"}:
             raise ValueError("quality must be low or high")
         if devices is not None:
@@ -448,6 +477,8 @@ class WorkerPool:
                 raise ValueError("Configure a worker for this quality in a multi-worker deployment")
             worker = self.workers[0]
             if worker.owner is not None or getattr(worker, "recovering", None):
+                if str(worker.owner).startswith("quality-switch:"):
+                    raise CapacityError("The GPU is preparing a session. Please wait for preparation to finish.")
                 raise CapacityError(
                     "GPU is busy. End its current session before switching quality."
                 )
@@ -458,14 +489,17 @@ class WorkerPool:
         from .quality import prepare_quality
 
         previous = worker.config
-        target = tuple(devices) if devices is not None else self.demo_devices[quality]
-        mapping = dict(self.demo_devices)
-        if devices is not None:
-            mapping["low"] = target[:1]
-            if quality == "high" or mapping["high"][:1] != target[:1]:
-                mapping["high"] = target
         unloaded = False
         try:
+            if quality not in self.demo_devices:
+                raise ValueError("Requested quality is not configured")
+            target = tuple(devices) if devices is not None else self.demo_devices[quality]
+            mapping = dict(self.demo_devices)
+            if devices is not None:
+                mapping["low"] = target[:1]
+                high_group = mapping.get("high")
+                if high_group is not None and (quality == "high" or high_group[:1] != target[:1]):
+                    mapping["high"] = target
             progress("checking")
             await prepare_quality(self.settings, quality)
             if not worker.ready or previous.quality != quality or previous.devices != target:
@@ -481,7 +515,7 @@ class WorkerPool:
                 options = {d["id"]: d["physical_id"] for d in await self.gpu_options()}
                 await asyncio.to_thread(
                     self.settings.save_demo_selection,
-                    [options[d] for d in mapping["high"]],
+                    [options[d] for d in mapping.get("high", mapping["low"])],
                     quality,
                 )
             self.demo_devices = mapping
@@ -527,3 +561,4 @@ class WorkerPool:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await asyncio.gather(*(w.stop() for w in self.workers))
+

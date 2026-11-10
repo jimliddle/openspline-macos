@@ -5,6 +5,7 @@ import base64
 import contextlib
 import io
 import json
+import logging
 import secrets
 import shutil
 import time
@@ -35,6 +36,7 @@ from .media import AudioTrack, VideoTrack
 from .session import Session
 from .socket_playback import SocketPlayback, jpeg
 from .worker import CapacityError, WorkerPool
+from .tts import KokoroSpeech, SpeechBusy, SpeechFailure, SpeechUnavailable, model_directory
 
 STATIC = Path(__file__).parent / "static"
 
@@ -42,6 +44,7 @@ STATIC = Path(__file__).parent / "static"
 def create_app(settings: Settings | None = None):
     settings = settings or Settings()
     pool = WorkerPool(settings)
+    speech = KokoroSpeech(model_directory(settings.model_dir), settings.runtime_dir)
     sessions = {}
     quality_jobs = {}
     quality_tasks = set()
@@ -80,11 +83,13 @@ def create_app(settings: Settings | None = None):
             task.cancel()
         await asyncio.gather(*quality_tasks, return_exceptions=True)
         await asyncio.gather(*(remove(id) for id in list(sessions)))
+        await speech.close()
         await pool.close()
 
     app = FastAPI(title="openspline", version="0.1.1", lifespan=lifespan)
     app.state.pool = pool
     app.state.sessions = sessions
+    app.state.speech = speech
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -99,7 +104,7 @@ def create_app(settings: Settings | None = None):
             if isinstance(exc.detail, dict)
             else {"code": "request", "message": exc.detail}
         )
-        return JSONResponse({"error": detail}, status_code=exc.status_code)
+        return JSONResponse({"error": detail}, status_code=exc.status_code, headers=exc.headers)
 
     def get(id):
         s = sessions.get(id)
@@ -119,6 +124,35 @@ def create_app(settings: Settings | None = None):
     @app.get("/healthz")
     async def health():
         return {"status": "ok"}
+
+    @app.get("/v1/tts")
+    async def speech_status():
+        return JSONResponse(speech.status(), headers={"Cache-Control": "no-store"})
+
+    @app.post("/v1/tts")
+    async def synthesize_speech(request: Request):
+        raw = bytearray()
+        async for chunk in request.stream():
+            if len(raw) + len(chunk) > 16384:
+                raise HTTPException(413, "Speech request is too large.")
+            raw.extend(chunk)
+        try:
+            body = json.loads(raw)
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise HTTPException(422, "Send text, voice and speed as JSON.") from exc
+        try:
+            audio = await speech.synthesize(body)
+        except ValueError as exc:
+            raise HTTPException(422, {"code": "tts_input", "message": str(exc)}) from exc
+        except SpeechBusy as exc:
+            raise HTTPException(429, {"code": "tts_busy", "message": str(exc)}, headers={"Retry-After": "1"}) from exc
+        except SpeechUnavailable as exc:
+            raise HTTPException(503, {"code": "tts_unavailable", "message": str(exc)}) from exc
+        except SpeechFailure as exc:
+            raise HTTPException(422, {"code": "tts_generation", "message": str(exc)}) from exc
+        return Response(audio, media_type="audio/wav", headers={
+            "Cache-Control": "no-store", "Content-Disposition": 'attachment; filename="kokoro-speech.wav"',
+        })
 
     @app.get("/v1/demo/providers")
     async def demo_providers():
@@ -161,6 +195,7 @@ def create_app(settings: Settings | None = None):
                 job.update(state="error", error="Service is shutting down")
                 raise
             except Exception as exc:
+                logging.getLogger(__name__).exception("Avatar quality preparation failed (quality=%s)", quality)
                 job.update(state="error", error=str(exc))
 
         task = asyncio.create_task(prepare())
@@ -214,8 +249,8 @@ def create_app(settings: Settings | None = None):
             {
                 "workers": workers,
                 "backend": settings.backend,
-                "demo_qualities": ["low", "high"]
-                if len(pool.workers) == 1
+                "demo_qualities": list(pool.demo_devices)
+                if pool.demo_devices
                 else sorted({w.config.quality for w in pool.workers}),
                 "demo_devices": pool.demo_devices,
             },
@@ -316,6 +351,7 @@ def create_app(settings: Settings | None = None):
             )
             await s.start()
         except Exception as exc:
+            logging.getLogger(__name__).exception("Avatar portrait preparation failed (quality=%s)", quality)
             if compositor:
                 compositor.close()
             await pool.release(worker, id)
@@ -687,3 +723,4 @@ def create_app(settings: Settings | None = None):
             return FileResponse(STATIC / "view.html")
 
     return app
+

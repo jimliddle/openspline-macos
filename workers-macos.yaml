@@ -1,0 +1,6 @@
+workers:
+  - id: apple-metal
+    quality: low
+    devices: [0]
+startup_timeout: 900
+inference_timeout: 600

@@ -9,6 +9,15 @@ from pathlib import Path
 
 def list_gpus(visible=None):
     """List allowed CUDA ordinals without initializing CUDA in the API process."""
+    from .device import device_type
+
+    if device_type() == "mps":
+        try:
+            total = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True))
+        except (OSError, ValueError, subprocess.CalledProcessError):
+            total = 0
+        return [dict(id=0, physical_id=0, name="Apple Silicon (Metal)",
+                     memory_total_mb=total // (1024 * 1024), memory_free_mb=None)]
     result = subprocess.run(
         [
             "nvidia-smi",
@@ -136,6 +145,12 @@ def main():
     args = parser.parse_args()
     try:
         settings = configure(os.getenv("OPENSPLINE_CONFIG", "workers.yaml"))
+        from .device import device_type, validate_mps
+
+        if device_type() == "mps":
+            dtype = validate_mps()
+            print(f"Apple GPU 0: Metal arithmetic and Conv3d verified, precision {dtype}")
+            return
         if args.check:
             if len(settings.demo_high_devices or ()) > 1 or any(
                 len(w.devices) > 1 for w in settings.workers
@@ -165,3 +180,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

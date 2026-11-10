@@ -1,4 +1,23 @@
 export const examples = {
+  kokoro: {
+    title: 'Local Kokoro speech',
+    description: 'Type text, choose a voice, and let your avatar speak. Speech and video are generated on this Mac.',
+    file: 'universal.py',
+    code: `from pathlib import Path
+import httpx
+from openspline import Openspline
+
+async def speak(text):
+    async with httpx.AsyncClient(timeout=120) as http:
+        speech = await http.post("http://127.0.0.1:7860/v1/tts", json={
+            "text": text, "voice": "af_heart", "speed": 1.0,
+        })
+        speech.raise_for_status()
+    Path("speech.wav").write_bytes(speech.content)
+    async with Openspline(url="http://127.0.0.1:7860").avatar("portrait.jpg") as avatar:
+        print(avatar.viewer_url)
+        await avatar.play_file("speech.wav")`,
+  },
   elevenlabs: {
     title: 'ElevenLabs Agents',
     description: 'Connect your existing ElevenLabs agent WebSocket.',
@@ -127,3 +146,4 @@ export function setupDemoExamples(source, title, description, code, link, copy, 
   });
   render();
 }
+

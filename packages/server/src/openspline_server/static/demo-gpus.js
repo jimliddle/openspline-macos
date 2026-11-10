@@ -18,7 +18,8 @@ export async function setupGpuPicker(request, quality, fieldset, list, hint) {
       description.textContent = `GPU ${gpu.physical_id} · ${gpu.name}`;
       if (gpu.memory_total_mb) {
         const memory = document.createElement('small');
-        memory.textContent = `${Math.round(gpu.memory_total_mb / 1024)} GB total · ${Math.round(gpu.memory_free_mb / 1024)} GB free`;
+        memory.textContent = `${Math.round(gpu.memory_total_mb / 1024)} GB total`;
+        if (gpu.memory_free_mb != null) memory.textContent += ` · ${Math.round(gpu.memory_free_mb / 1024)} GB free`;
         description.append(memory);
       }
       label.append(input, description);
@@ -53,3 +54,4 @@ export async function setupGpuPicker(request, quality, fieldset, list, hint) {
     },
   };
 }
+

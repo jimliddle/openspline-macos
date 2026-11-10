@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>openspline demo</title>
-  <link rel="stylesheet" href="/static/style.css?v=4">
+  <link rel="stylesheet" href="/static/style.css?v=7">
 </head>
 <body>
   <header>
@@ -13,16 +13,47 @@
   </header>
   <main>
     <section class="studio" aria-label="Avatar demo">
+      <div class="portrait-panel">
       <p id="health" class="hint" role="status">Checking service…</p>
       <div class="preview" id="preview">
         <div class="empty" id="empty">Upload a portrait to preview it.</div>
         <openspline-avatar id="avatar" hidden></openspline-avatar>
         <img id="portrait-preview" alt="Selected portrait" hidden>
+        <canvas id="portrait-crop" width="512" height="512" role="img" aria-label="Portrait crop. Drag to move the photo, or use arrow keys. Hold Shift for larger moves." aria-describedby="crop-instructions" hidden></canvas>
+        <div id="crop-grid" aria-hidden="true" hidden></div>
+      </div>
+      <div id="portrait-controls" hidden>
+        <div id="crop-actions" class="crop-actions">
+          <button id="crop-edit" type="button">Crop portrait</button>
+          <button id="crop-original" type="button" hidden>Use full image</button>
+        </div>
+        <fieldset id="crop-editor" hidden aria-describedby="crop-instructions">
+          <legend>Frame your portrait</legend>
+          <p id="crop-instructions" class="hint">Drag the photo to position your face in the square. You can also use the position sliders or arrow keys.</p>
+          <label for="crop-zoom">Zoom <output id="crop-zoom-value" for="crop-zoom">1.00×</output>
+            <input id="crop-zoom" type="range" min="1" max="4" step="0.01" value="1">
+          </label>
+          <div class="split">
+            <label for="crop-horizontal">Horizontal position
+              <input id="crop-horizontal" type="range" min="0" max="100" step="0.1" value="50">
+            </label>
+            <label for="crop-vertical">Vertical position
+              <input id="crop-vertical" type="range" min="0" max="100" step="0.1" value="50">
+            </label>
+          </div>
+          <div class="crop-actions">
+            <button id="crop-apply" type="button" class="primary">Use this crop</button>
+            <button id="crop-cancel" type="button">Cancel</button>
+            <button id="crop-reset" type="button">Reset</button>
+          </div>
+        </fieldset>
+        <p id="portrait-message" class="portrait-note hint" role="status" aria-live="polite"></p>
+      </div>
       </div>
       <form id="setup">
         <label for="portrait">Portrait
           <input id="portrait" type="file" accept="image/jpeg,image/png,image/webp" aria-describedby="portrait-hint" required>
-          <span id="portrait-hint" class="hint">JPG, PNG or WebP · up to 10 MB</span>
+          <span id="portrait-hint" class="hint">Use a sharp, front-facing head-and-shoulders portrait, with the face filling much of the image. JPG, PNG or WebP · up to 10 MB</span>
         </label>
         <div class="split">
           <label>Quality
@@ -32,14 +63,43 @@
             </select>
           </label>
           <label>Audio source
-            <select id="source">
-              <option value="file">Audio file</option>
+            <select id="source" aria-describedby="source-hint">
+              <option value="kokoro" selected>Typed text · Kokoro (local)</option>
+              <option value="file">Upload voice audio</option>
               <option value="openai">OpenAI Realtime</option>
               <option value="gemini">Gemini Live</option>
               <option value="elevenlabs">ElevenLabs Agents</option>
             </select>
+            <span id="source-hint" class="hint">Type text or upload your own speech recording.</span>
           </label>
         </div>
+        <fieldset id="tts-settings" aria-describedby="tts-hint">
+          <legend>Local speech</legend>
+          <label for="tts-text">What should your avatar say?
+            <textarea id="tts-text" rows="5" maxlength="2000" required aria-describedby="tts-count">Hello! This voice is generated with Kokoro, and my avatar is generated entirely on this Mac.</textarea>
+            <span id="tts-count" class="hint">0 / 2,000</span>
+          </label>
+          <div class="split">
+            <label for="tts-voice">Voice
+              <select id="tts-voice"><option value="af_heart">Heart · American female</option></select>
+            </label>
+            <label for="tts-speed">Speech speed
+              <select id="tts-speed">
+                <option value="0.75">0.75× · slower</option>
+                <option value="1" selected>1× · normal</option>
+                <option value="1.25">1.25× · faster</option>
+                <option value="1.5">1.5× · brisk</option>
+              </select>
+            </label>
+          </div>
+          <div class="voice-preview-controls">
+            <button id="tts-preview-button" type="button" disabled>Preview voice</button>
+            <span class="hint">Hear a short sample before you choose. No portrait needed.</span>
+          </div>
+          <audio id="tts-preview-audio" controls preload="none" aria-label="Kokoro voice preview" hidden></audio>
+          <p id="tts-preview-message" class="hint" role="status" aria-live="polite"></p>
+          <p id="tts-hint" class="hint" role="status">Checking local Kokoro speech…</p>
+        </fieldset>
         <label id="agent-id-field" hidden>ElevenLabs agent ID
           <input id="agent-id" type="text" maxlength="256" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="agent-id-hint" disabled>
           <span id="agent-id-hint" class="hint"></span>
@@ -54,18 +114,24 @@
           <div id="gpu-list"></div>
           <p id="gpu-hint" class="hint">Discovering GPUs…</p>
         </fieldset>
-        <label id="audio-label">Audio file
-          <input id="audio" type="file" accept="audio/*">
-        </label>
+        <div id="audio-label" hidden>
+          <label for="audio">Upload voice audio
+            <input id="audio" type="file" accept="audio/*" aria-describedby="audio-hint" disabled>
+            <span id="audio-hint" class="hint">Use your own speech recording, such as WAV or MP3. The avatar follows its voice and timing.</span>
+          </label>
+          <audio id="uploaded-audio-preview" controls preload="metadata" aria-label="Uploaded voice audio preview" hidden></audio>
+        </div>
         <div class="actions">
-          <button id="start" class="primary" type="submit">Start demo</button>
+          <button id="start" class="primary" type="submit" disabled>Speak</button>
           <button id="stop" type="button" hidden>End session</button>
         </div>
         <a id="download" class="download" href="#" download hidden>Download video</a>
-        <p id="status" class="hint" role="status" aria-live="polite">Choose a portrait and audio source.</p>
+        <a id="speech-download" class="download" href="#" download="kokoro-speech.wav" hidden>Download speech</a>
+        <p id="status" class="hint" role="status" aria-live="polite">Choose a portrait, type your text, and click Speak.</p>
       </form>
     </section>
-    <section class="example" aria-labelledby="example-title">
+    <details class="example">
+      <summary>Developer example</summary>
       <div class="example-heading">
         <h2 id="example-title">Custom audio</h2>
         <button id="copy-example" type="button">Copy code</button>
@@ -77,8 +143,9 @@
         <a id="example-link" href="https://github.com/openspline/openspline/blob/main/examples/python/universal.py" target="_blank" rel="noopener noreferrer">Full example</a>
       </div>
       <p id="copy-status" class="hint" role="status" aria-live="polite"></p>
-    </section>
+    </details>
   </main>
-  <script type="module" src="/static/demo.js?v=4"></script>
+  <script type="module" src="/static/demo.js?v=7"></script>
 </body>
 </html>
+

@@ -40,6 +40,15 @@ class Settings:
     def __post_init__(self):
         if self.backend not in {"gpu", "test"}:
             raise ValueError("Unknown backend")
+        from .device import device_type
+
+        if self.backend == "gpu" and device_type() == "mps":
+            if len(self.workers) != 1 or self.workers[0].devices != (0,):
+                raise ValueError("The Metal port uses one worker on Apple GPU 0")
+            if self.workers[0].quality != "low":
+                raise ValueError("The experimental Metal port currently supports Low/Lite only")
+            if self.demo_high_devices not in (None, (0,), [0]):
+                raise ValueError("The Metal port uses Apple GPU 0 only")
         occupied, ids = set(), set()
         if not self.workers:
             raise ValueError("At least one worker is required")
@@ -94,3 +103,4 @@ class Settings:
             for w in data.pop("workers", [{"id": "gpu-0", "devices": [0]}])
         ]
         return cls(workers=workers, **(data | kwargs))
+
