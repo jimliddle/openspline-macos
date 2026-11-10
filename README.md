@@ -17,6 +17,9 @@ The local workflow needs no cloud inference account or API key. Initial setup do
 - **Uploaded voice audio.** Animate your own speech recording instead of using text to speech. Both sources use the same portrait controls.
 - **A Mac setup workflow.** Installation, launch and real video smoke-test scripts, plus speech/video downloads from the browser where recording is supported.
 
+<img width="606" height="384" alt="image" src="https://github.com/user-attachments/assets/b349747b-9048-48d3-a899-57c44a5ad662" />
+
+
 ## Current support
 
 | Area | Status |
