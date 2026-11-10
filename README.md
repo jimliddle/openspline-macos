@@ -4,7 +4,7 @@
 
 This is an Apple Silicon fork of [OpenSpline](https://github.com/openspline/openspline), maintained by [Jim Liddle](https://github.com/jimliddle). It adapts the NVIDIA/CUDA inference path to Apple's Metal GPU through PyTorch MPS and adds local Kokoro text to speech and portrait framing in the web interface.
 
-The local workflow needs no cloud inference account or API key. Initial setup downloads dependencies and models; speech and avatar generation then run locally. Cloud voice integrations inherited from OpenSpline remain separate, optional features.
+The local workflow needs no cloud inference account or API key. Initial setup downloads dependencies and models, speech and avatar generation then run locally. Cloud voice integrations inherited from OpenSpline remain separate, optional features.
 
 ## What this fork adds
 
